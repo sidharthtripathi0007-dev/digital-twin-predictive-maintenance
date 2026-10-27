@@ -24,6 +24,7 @@ venv/
 __pycache__/
 *.py[cod]
 .pytest_cache/
+artifacts/turbine-maintenance/data/raw/
 
 # IDEs and editors
 /.idea
