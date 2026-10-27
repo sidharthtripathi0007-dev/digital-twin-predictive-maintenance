@@ -1,0 +1,13 @@
+[project]
+name = "turbine-maintenance-demo"
+version = "0.1.0"
+description = "Streamlit demonstration of a simulated industrial digital twin"
+requires-python = ">=3.10"
+dependencies = [
+    "pandas>=2.2,<4",
+    "streamlit>=1.37,<2",
+]
+
+[build-system]
+requires = ["uv_build>=0.13.4,<0.14.0"]
+build-backend = "uv_build"

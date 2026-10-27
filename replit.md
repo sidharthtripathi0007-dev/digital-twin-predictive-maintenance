@@ -1,6 +1,6 @@
-# [Project name]
+# TURBINE_01 Predictive Maintenance
 
-_Replace the heading above with the project's name, and this line with one sentence describing what this app does for users._
+Streamlit college-project dashboard demonstrating a simulated industrial digital twin and rule-based maintenance estimates for TURBINE_01.
 
 ## Run & Operate
 
@@ -22,15 +22,19 @@ _Replace the heading above with the project's name, and this line with one sente
 
 ## Where things live
 
-_Populate as you build — short repo map plus pointers to the source-of-truth file for DB schema, API contracts, theme files, etc._
+- `artifacts/turbine-maintenance/app.py` — Streamlit dashboard and session-state history
+- `artifacts/turbine-maintenance/src/` — simulated twin, RUL heuristic, maintenance rules, and network timing
+- `requirements.txt` and `README.md` — Python dependencies and run instructions
 
 ## Architecture decisions
 
-_Populate as you build — non-obvious choices a reader couldn't infer from the code (3-5 bullets)._
+- All readings and network timings are generated in-memory; no physical sensors or external services are required.
+- RUL is a transparent simulated heuristic, not output from a trained or validated deep-learning model.
+- Dashboard state and history are session-local and reset when a new session starts.
 
 ## Product
 
-_Describe the high-level user-facing capabilities of this app once they exist._
+Demonstrates changing Healthy, Degrading, and Critical turbine conditions, live synthetic sensor telemetry, sensor and status history, configurable RUL alerts, rule-based maintenance recommendations, and simulated network delay.
 
 ## User preferences
 

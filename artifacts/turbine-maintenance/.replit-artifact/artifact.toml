@@ -1,0 +1,31 @@
+kind = "web"
+previewPath = "/"
+title = "Digital Twin-Based Predictive Maintenance for Industrial IoT Using Deep Learning"
+description = "A Streamlit-based industrial IoT digital twin demonstration that simulates TURBINE_01 sensor readings, machine health, estimated remaining useful life, maintenance alerts, history, and network latency without physical hardware."
+version = "1.0.0"
+id = "artifacts/turbine-maintenance"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 20801
+
+[services.development]
+run = "streamlit run app.py --server.address 0.0.0.0 --server.port $PORT --server.headless true --browser.gatherUsageStats false"
+
+[services.production.build]
+args = ["uv", "pip", "install", "--system", "-r", "requirements.txt"]
+
+[services.production.run]
+args = ["streamlit", "run", "artifacts/turbine-maintenance/app.py", "--server.address", "0.0.0.0", "--server.port", "20801", "--server.headless", "true", "--browser.gatherUsageStats", "false"]
+
+[services.production.run.env]
+PORT = "20801"
+
+[services.production.health.startup]
+path = "/"
+
+[services.env]
+PORT = "20801"
+BASE_PATH = "/"

@@ -1,0 +1,1 @@
+- [Python package tooling](python-package-tooling.md) — When global pip cleanup hits Nix's managed runtime, update manifests and use uv to keep dependency locks consistent.
