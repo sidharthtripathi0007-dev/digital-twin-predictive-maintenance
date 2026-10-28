@@ -1,5 +1,6 @@
 {
   "artifact_files": {
+    "demo_sequences": "heldout_demo_sequences.npz",
     "held_out_predictions": "heldout_engine_predictions.csv",
     "model": "fd001_lstm.npz",
     "preprocessing": "preprocessing.json"

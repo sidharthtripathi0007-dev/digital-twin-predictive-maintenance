@@ -1,1 +1,2 @@
 - [Python package tooling](python-package-tooling.md) — When global pip cleanup hits Nix's managed runtime, update manifests and use uv to keep dependency locks consistent.
+- [C-MAPSS data access](cmapss-data-access.md) — The NASA archive can time out here even when a public raw GitHub mirror is reachable.

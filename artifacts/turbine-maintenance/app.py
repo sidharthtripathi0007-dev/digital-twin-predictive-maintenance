@@ -6,8 +6,10 @@ import pandas as pd
 import streamlit as st
 from datetime import datetime, timedelta
 from src.maintenance import estimate_rul_hours, get_maintenance_recommendations
+from src.lstm_inference import load_heldout_predictions, parse_cmapss_csv
 from src.lstm_model import NumpyLSTMRegressor
 from src.network import simulate_message_latency
+
 MACHINE_ID = "TURBINE_01"
 # ---------------- LSTM MODEL CONFIGURATION ----------------
 
@@ -108,6 +110,44 @@ def predict_lstm_rul(sequence, model, config):
     rul_cycles = float(np.clip(prediction * target_scale, 0, rul_cap))
 
     return rul_cycles
+
+
+@st.cache_data(show_spinner=False)
+def _load_lstm_demo_data():
+    report = None
+    try:
+        if (MODEL_DIR / "training_report.json").exists():
+            with (MODEL_DIR / "training_report.json").open(
+                "r",
+                encoding="utf-8",
+            ) as report_file:
+                report = json.load(report_file)
+        if not report or report.get("status") != "trained":
+            return {
+                "report": report,
+                "predictions": None,
+                "error": "No completed NASA FD001 LSTM training report is available.",
+            }
+
+        model, config = load_lstm_model()
+        report, predictions = load_heldout_predictions(
+            MODEL_DIR,
+            model,
+            config,
+        )
+        return {
+            "report": report,
+            "predictions": predictions,
+            "error": None,
+        }
+    except Exception as error:
+        return {
+            "report": report,
+            "predictions": None,
+            "error": str(error),
+        }
+
+
 HISTORY_LIMIT = 180
 
 st.set_page_config(
@@ -120,6 +160,13 @@ st.set_page_config(
 
 
 def _initialize_demo_state() -> None:
+    if "lstm_predicted_rul" not in st.session_state:
+        st.session_state["lstm_predicted_rul"] = None
+    if "lstm_prediction_source" not in st.session_state:
+        st.session_state["lstm_prediction_source"] = None
+    if "_last_lstm_demo_engine" not in st.session_state:
+        st.session_state["_last_lstm_demo_engine"] = None
+
     if "twin" in st.session_state:
         return
 
@@ -256,8 +303,9 @@ def _render_sidebar() -> None:
         st.divider()
         st.caption("Simulation only")
         st.caption(
-            "No physical sensors, machine connection, or trained model are used. "
-            "All readings and message timings are generated locally."
+            "TURBINE_01 readings and message timings are generated locally. "
+            "The NASA C-MAPSS LSTM is a separate benchmark and does not use "
+            "these simulated readings."
         )
 
 
@@ -333,6 +381,24 @@ def _render_overview(reading: dict) -> None:
             "exponential rule. This is not a deep-learning prediction, is not "
             "trained on historical failure data, and must not be used for real "
             "equipment decisions."
+        )
+
+    st.subheader("Separate NASA FD001 LSTM result")
+    latest_lstm_rul = st.session_state.get("lstm_predicted_rul")
+    if latest_lstm_rul is None:
+        st.info(
+            "No successful LSTM inference is available yet. Open the LSTM Model "
+            "tab to view the FD001 benchmark or upload a compatible C-MAPSS CSV."
+        )
+    else:
+        st.metric(
+            "Latest NASA C-MAPSS LSTM RUL",
+            f"{latest_lstm_rul:.1f} cycles",
+        )
+        st.caption(
+            f"Source: {st.session_state.get('lstm_prediction_source') or 'NASA FD001'}. "
+            "This cycle estimate is separate from TURBINE_01's simulated "
+            "hour-based heuristic."
         )
 
     st.subheader("Maintenance recommendations")
@@ -437,8 +503,9 @@ st.caption(
     f"College project demonstration · software digital twin · machine `{MACHINE_ID}`"
 )
 st.warning(
-    "Demonstration only: all telemetry is simulated. This version uses a "
-    "transparent rule-based RUL estimate; no deep-learning model has been trained."
+    "Demonstration only: TURBINE_01 telemetry and its hour-based RUL alerts are "
+    "simulated. A separately trained NASA FD001 LSTM benchmark is available in "
+    "the LSTM Model tab; it does not consume TURBINE_01 readings."
 )
 overview_tab, sensors_tab, history_tab, network_tab, lstm_tab = st.tabs(
     [
@@ -465,35 +532,150 @@ def _render_live_dashboard() -> None:
         _render_network_monitor()
 
 
-_render_live_dashboard()
-with lstm_tab:
+def _render_lstm_model_tab() -> None:
     st.subheader("LSTM Model Prediction")
 
+    demo = _load_lstm_demo_data()
+    report = demo.get("report")
+    predictions = demo.get("predictions")
+
+    if report and report.get("status") == "trained":
+        st.success(
+            "Trained NASA C-MAPSS FD001 LSTM loaded from the saved model artifacts."
+        )
+        rmse = report.get("held_out_rmse_cycles")
+        mae = report.get("held_out_mae_cycles")
+        if rmse is not None and mae is not None:
+            metric_columns = st.columns(3)
+            metric_columns[0].metric("Held-out RMSE", f"{float(rmse):.4f} cycles")
+            metric_columns[1].metric("Held-out MAE", f"{float(mae):.3f} cycles")
+            metric_columns[2].metric(
+                "Held-out engines",
+                str(report.get("held_out_engine_count", "—")),
+            )
+        st.caption(
+            f"Engine-disjoint evaluation over "
+            f"{report.get('held_out_window_count', '—')} held-out windows; "
+            f"RUL targets capped at {report.get('training_config', {}).get('rul_cap_cycles', '—')} cycles."
+        )
+        st.info(
+            "The saved model input is 24 values per cycle in preprocessing.json: "
+            "3 C-MAPSS operating settings plus 21 sensor channels, over 30 "
+            "consecutive cycles. It is not compatible with TURBINE_01's four "
+            "simulated readings."
+        )
+    elif demo.get("error"):
+        st.error(f"LSTM model status: {demo['error']}")
+
+    if predictions is not None and not predictions.empty:
+        st.markdown("**Predictions on held-out NASA FD001 engines**")
+        engine_ids = predictions["engine_id"].astype(int).tolist()
+        selected_engine = st.selectbox(
+            "Inspect a held-out engine",
+            options=engine_ids,
+            format_func=lambda engine_id: f"Engine {engine_id}",
+            key="lstm_demo_engine_id",
+        )
+        selected = predictions.loc[
+            predictions["engine_id"] == selected_engine
+        ].iloc[0]
+        prediction_columns = st.columns(3)
+        prediction_columns[0].metric(
+            "LSTM predicted RUL",
+            f"{selected['predicted_rul_cycles']:.1f} cycles",
+        )
+        prediction_columns[1].metric(
+            "Known held-out RUL",
+            f"{selected['actual_rul_cycles']:.0f} cycles",
+        )
+        prediction_columns[2].metric(
+            "Absolute error",
+            f"{selected['absolute_error_cycles']:.1f} cycles",
+        )
+        if st.session_state.get("_last_lstm_demo_engine") != selected_engine:
+            st.session_state["lstm_predicted_rul"] = float(
+                selected["predicted_rul_cycles"]
+            )
+            st.session_state["lstm_prediction_source"] = (
+                f"NASA FD001 held-out engine {selected_engine}"
+            )
+            st.session_state["_last_lstm_demo_engine"] = selected_engine
+
+        display = predictions[
+            [
+                "engine_id",
+                "cycle",
+                "predicted_rul_cycles",
+                "actual_rul_cycles",
+                "absolute_error_cycles",
+            ]
+        ].rename(
+            columns={
+                "engine_id": "Engine",
+                "cycle": "Cycle",
+                "predicted_rul_cycles": "LSTM predicted RUL (cycles)",
+                "actual_rul_cycles": "Known RUL (cycles)",
+                "absolute_error_cycles": "Absolute error (cycles)",
+            }
+        )
+        for column in (
+            "LSTM predicted RUL (cycles)",
+            "Absolute error (cycles)",
+        ):
+            display[column] = display[column].map(lambda value: f"{value:.2f}")
+        st.dataframe(display, width="stretch", hide_index=True)
+    elif report and report.get("status") == "trained":
+        st.warning(
+            "The training report is available, but the saved held-out sequence "
+            f"demo could not be loaded: {demo.get('error') or 'no prediction rows'}"
+        )
+
+    st.markdown("**Run inference on a C-MAPSS CSV**")
+    st.caption(
+        "Upload rows with the exact model feature names, or raw C-MAPSS rows. "
+        "The predictor selects the latest 30 cycles per engine, sorts and checks "
+        "cycle continuity when cycle numbers are included, and otherwise uses "
+        "the row order in the file."
+    )
     uploaded_csv = st.file_uploader(
         "Upload C-MAPSS CSV",
-        type=["csv"],
+        type=["csv", "txt"],
         key="lstm_csv",
     )
 
     if uploaded_csv is not None:
         try:
-            import numpy as np
-
             model, config = load_lstm_model()
-            data = pd.read_csv(uploaded_csv)
-            columns = config["feature_columns"]
-
-            if not set(columns).issubset(data.columns):
-                st.error("CSV is missing required C-MAPSS features.")
-            elif len(data) < 30:
-                st.error("CSV must contain at least 30 consecutive cycles.")
+            sequences = parse_cmapss_csv(uploaded_csv.getvalue(), config)
+            if len(sequences) > 1:
+                labels = [sequence["label"] for sequence in sequences]
+                selected_label = st.selectbox(
+                    "Choose an uploaded engine sequence",
+                    options=labels,
+                    key="lstm_uploaded_engine",
+                )
+                selected_sequence = next(
+                    item["sequence"]
+                    for item in sequences
+                    if item["label"] == selected_label
+                )
             else:
-                sequence = data[columns].tail(30).to_numpy(dtype=np.float32)
-                rul = predict_lstm_rul(sequence, model, config)
-                st.success("LSTM inference completed.")
-                st.metric("Predicted RUL", f"{rul:.1f} cycles")
-                st.session_state["lstm_predicted_rul"] = rul
-                st.session_state["lstm_prediction_source"] = "NASA C-MAPSS dataset"
+                selected_label = sequences[0]["label"]
+                selected_sequence = sequences[0]["sequence"]
+
+            rul = predict_lstm_rul(selected_sequence, model, config)
+            st.success("LSTM inference completed on the uploaded C-MAPSS sequence.")
+            st.metric("Uploaded sequence predicted RUL", f"{rul:.1f} cycles")
+            st.session_state["lstm_predicted_rul"] = rul
+            st.session_state["lstm_prediction_source"] = (
+                f"Uploaded {uploaded_csv.name} · {selected_label}"
+            )
 
         except Exception as exc:
-            st.error(f"LSTM error: {exc}")
+            st.error(f"LSTM inference error: {exc}")
+
+
+with lstm_tab:
+    _render_lstm_model_tab()
+
+_render_live_dashboard()

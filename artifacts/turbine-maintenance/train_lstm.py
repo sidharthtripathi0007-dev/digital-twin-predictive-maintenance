@@ -233,9 +233,29 @@ def train(
         model_path = model_dir / "fd001_lstm.npz"
         preprocessing_path = model_dir / "preprocessing.json"
         predictions_path = model_dir / "heldout_engine_predictions.csv"
+        demo_sequences_path = model_dir / "heldout_demo_sequences.npz"
         report_path = model_dir / "training_report.json"
 
         model.save(model_path)
+        demo_sequences_tmp = demo_sequences_path.with_suffix(".npz.tmp")
+        with demo_sequences_tmp.open("wb") as output:
+            np.savez_compressed(
+                output,
+                normalized_windows=example_windows,
+                engine_ids=np.asarray(
+                    [example["engine_id"] for example in examples],
+                    dtype=np.int64,
+                ),
+                cycles=np.asarray(
+                    [example["cycle"] for example in examples],
+                    dtype=np.int64,
+                ),
+                actual_rul_cycles=np.asarray(
+                    [example["actual_rul_cycles"] for example in examples],
+                    dtype=np.int64,
+                ),
+            )
+        demo_sequences_tmp.replace(demo_sequences_path)
         preprocessing = {
             **scaler,
             "window_size": WINDOW_SIZE,
@@ -295,6 +315,7 @@ def train(
                 "model": model_path.name,
                 "preprocessing": preprocessing_path.name,
                 "held_out_predictions": predictions_path.name,
+                "demo_sequences": demo_sequences_path.name,
             },
             "important_scope_note": (
                 "This is a C-MAPSS turbofan benchmark. Its 24 features and units "
