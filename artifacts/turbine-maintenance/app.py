@@ -1,15 +1,113 @@
-from __future__ import annotations
-
-from datetime import datetime, timedelta
-
+import json
+from pathlib import Path
+from src.twin import CONDITIONS, DigitalTwin
+import numpy as np
 import pandas as pd
 import streamlit as st
-
+from datetime import datetime, timedelta
 from src.maintenance import estimate_rul_hours, get_maintenance_recommendations
+from src.lstm_model import NumpyLSTMRegressor
 from src.network import simulate_message_latency
-from src.twin import CONDITIONS, DigitalTwin
-
 MACHINE_ID = "TURBINE_01"
+# ---------------- LSTM MODEL CONFIGURATION ----------------
+
+PROJECT_DIR = Path(__file__).resolve().parent
+MODEL_DIR = PROJECT_DIR / "model_artifacts"
+
+LSTM_MODEL_PATH = MODEL_DIR / "fd001_lstm.npz"
+PREPROCESSING_PATH = MODEL_DIR / "preprocessing.json"
+
+@st.cache_resource
+def load_lstm_model():
+    """Load the saved NumPy LSTM and its preprocessing configuration."""
+
+    if not LSTM_MODEL_PATH.exists():
+        raise FileNotFoundError(
+            f"LSTM checkpoint not found: {LSTM_MODEL_PATH}"
+        )
+
+    if not PREPROCESSING_PATH.exists():
+        raise FileNotFoundError(
+            f"Preprocessing configuration not found: {PREPROCESSING_PATH}"
+        )
+
+    with PREPROCESSING_PATH.open("r", encoding="utf-8") as file:
+        config = json.load(file)
+
+    input_size = int(config["input_size"])
+    hidden_size = int(config["hidden_size"])
+    window_size = int(config["window_size"])
+
+    if input_size != 24 or window_size != 30:
+        raise ValueError(
+            f"Unexpected model configuration: "
+            f"{input_size} features, {window_size} cycles."
+        )
+
+    if len(config["feature_columns"]) != input_size:
+        raise ValueError("Feature column count does not match input_size.")
+
+    if len(config["means"]) != input_size:
+        raise ValueError("Normalization means have the wrong length.")
+
+    if len(config["scales"]) != input_size:
+        raise ValueError("Normalization scales have the wrong length.")
+
+    model = NumpyLSTMRegressor.load(
+        LSTM_MODEL_PATH,
+        input_size=input_size,
+        hidden_size=hidden_size,
+    )
+
+    return model, config
+def predict_lstm_rul(sequence, model, config):
+    """
+    Predict RUL from 30 consecutive C-MAPSS cycles.
+
+    sequence must contain 30 rows and 24 features in the
+    exact order specified by preprocessing.json.
+    """
+
+    import numpy as np
+
+    expected_shape = (
+        int(config["window_size"]),
+        int(config["input_size"]),
+    )
+
+    sequence = np.asarray(sequence, dtype=np.float32)
+
+    if sequence.shape != expected_shape:
+        raise ValueError(
+            f"Expected {expected_shape} input, "
+            f"but received {sequence.shape}."
+        )
+
+    if not np.isfinite(sequence).all():
+        raise ValueError("Input sequence contains invalid values.")
+
+    means = np.asarray(config["means"], dtype=np.float32)
+    scales = np.asarray(config["scales"], dtype=np.float32)
+
+    if np.any(scales <= 0) or not np.isfinite(scales).all():
+        raise ValueError("Invalid normalization scales.")
+
+    normalized = (sequence - means) / scales
+
+    prediction = float(
+        model.predict(normalized[np.newaxis, :, :])[0]
+    )
+
+    if not np.isfinite(prediction):
+        raise ValueError("The LSTM returned a non-finite prediction.")
+
+    target_scale = float(config["target_scale"])
+    rul_cap = float(config["rul_cap_cycles"])
+
+    # Training uses RUL divided by the target scale.
+    rul_cycles = float(np.clip(prediction * target_scale, 0, rul_cap))
+
+    return rul_cycles
 HISTORY_LIMIT = 180
 
 st.set_page_config(
@@ -342,14 +440,21 @@ st.warning(
     "Demonstration only: all telemetry is simulated. This version uses a "
     "transparent rule-based RUL estimate; no deep-learning model has been trained."
 )
-
+overview_tab, sensors_tab, history_tab, network_tab, lstm_tab = st.tabs(
+    [
+        "Overview",
+        "Sensor history",
+        "Machine status history",
+        "Network monitor",
+        "LSTM Model",
+    ]
+)
 
 @st.fragment(run_every="3s")
 def _render_live_dashboard() -> None:
     reading = _record_live_sample()
-    overview_tab, sensors_tab, history_tab, network_tab = st.tabs(
-        ["Overview", "Sensor history", "Machine status history", "Network monitor"]
-    )
+    
+    
     with overview_tab:
         _render_overview(reading)
     with sensors_tab:
@@ -361,3 +466,34 @@ def _render_live_dashboard() -> None:
 
 
 _render_live_dashboard()
+with lstm_tab:
+    st.subheader("LSTM Model Prediction")
+
+    uploaded_csv = st.file_uploader(
+        "Upload C-MAPSS CSV",
+        type=["csv"],
+        key="lstm_csv",
+    )
+
+    if uploaded_csv is not None:
+        try:
+            import numpy as np
+
+            model, config = load_lstm_model()
+            data = pd.read_csv(uploaded_csv)
+            columns = config["feature_columns"]
+
+            if not set(columns).issubset(data.columns):
+                st.error("CSV is missing required C-MAPSS features.")
+            elif len(data) < 30:
+                st.error("CSV must contain at least 30 consecutive cycles.")
+            else:
+                sequence = data[columns].tail(30).to_numpy(dtype=np.float32)
+                rul = predict_lstm_rul(sequence, model, config)
+                st.success("LSTM inference completed.")
+                st.metric("Predicted RUL", f"{rul:.1f} cycles")
+                st.session_state["lstm_predicted_rul"] = rul
+                st.session_state["lstm_prediction_source"] = "NASA C-MAPSS dataset"
+
+        except Exception as exc:
+            st.error(f"LSTM error: {exc}")
